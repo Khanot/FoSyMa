@@ -1,5 +1,5 @@
 package eu.su.mas.dedaleEtu.mas.behaviours;
-
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 
@@ -51,7 +51,8 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
     private String currentTarget = null;
     private int failedMoveCount = 0;
     private static final int MAX_FAILED_MOVES = 3;
-
+    private Map<String, Integer> blockedNodes = new HashMap<>();
+    private static final int BLOCK_DURATION = 5;
     public ExploCoopBehaviour(final AbstractDedaleAgent myagent, MapRepresentation myMap,
             List<String> agentNames, Map<String, Location> knownPositions) {
         super(myagent);
@@ -65,6 +66,8 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
     	);
     @Override
     public void action() {
+    	blockedNodes.replaceAll((node, ticks) -> ticks - 1);
+    	blockedNodes.entrySet().removeIf(e -> e.getValue() <= 0);
     	
     	ACLMessage coordMsg = myAgent.receive(TEMPLATE_COORD);
         if (coordMsg != null) {
@@ -89,7 +92,7 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
         Location myPosition = ((AbstractDedaleAgent) this.myAgent).getCurrentPosition();
 
         if (myPosition != null) {
-            try { this.myAgent.doWait(1000); } catch (Exception e) { e.printStackTrace(); }
+            try { block(1000); } catch (Exception e) { e.printStackTrace(); }
 
             // 1) marquer le noeud courant comme closed
             this.myMap.addNode(myPosition.getLocationId(), MapAttribute.closed);
@@ -115,40 +118,51 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
                     this.list_agentNames  // déjà disponible dans ExploCoopBehaviour
                 ));
             }else {
-                // 4) choisir le prochain noeud en tenant compte des positions a priori
-                nextNodeId = chooseBestOpenNode(myPosition.getLocationId());
+            	// 4) Décider si on doit choisir une nouvelle cible
+            	boolean needNewTarget = false;
 
-                // 5) se déplacer
-             // 5) se déplacer
-                String targetNodeId = chooseBestOpenNode(myPosition.getLocationId());
+            	if (currentTarget == null) {
+            	    // Première exécution
+            	    needNewTarget = true;
+            	} else if (myPosition.getLocationId().equals(currentTarget)) {
+            	    // Arrivé à destination
+            	    System.out.println("[" + myAgent.getLocalName() + "] Cible atteinte : " + currentTarget);
+            	    needNewTarget = true;
+            	} else if (!this.myMap.getOpenNodes().contains(currentTarget)) {
+            	    // La cible n'est plus ouverte (explorée par un autre agent)
+            	    System.out.println("[" + myAgent.getLocalName() + "] Cible " + currentTarget + " n'est plus ouverte — nouvelle cible");
+            	    needNewTarget = true;
+            	}
 
-             // si la cible change, réinitialiser le compteur
-	             if (!targetNodeId.equals(currentTarget)) {
-	                 currentTarget = targetNodeId;
-	                 failedMoveCount = 0;
-	             }
-	
-	             List<String> path = this.myMap.getShortestPath(myPosition.getLocationId(), targetNodeId);
-	             if (path != null && !path.isEmpty()) {
-	                 boolean moved = ((AbstractDedaleAgent) this.myAgent).moveTo(new GsLocation(path.get(0)));
-	                 if (!moved) {
-	                     failedMoveCount++;
-	                     if (failedMoveCount >= MAX_FAILED_MOVES) {
-	                         // marquer le noeud cible comme bloqué temporairement
-	                         // et choisir le suivant meilleur noeud
-	                         System.out.println("[" + myAgent.getLocalName() + "] Bloqué sur " 
-	                             + targetNodeId + " depuis " + failedMoveCount + " ticks — changement de cible");
-	                         currentTarget = chooseBestOpenNodeExcluding(
-	                             myPosition.getLocationId(), currentTarget);
-	                         failedMoveCount = 0;
-	                     }
-	                 } else {
-	                     failedMoveCount = 0;
-	                 }
-	             } else {
-	                 block(500);
-	             }
-            }
+            	if (needNewTarget) {
+            	    currentTarget = chooseBestOpenNodeExcludingPath(myPosition.getLocationId());
+            	    failedMoveCount = 0;
+            	    System.out.println("[" + myAgent.getLocalName() + "] Nouvelle cible : " + currentTarget);
+            	}
+
+            	// 5) Se déplacer vers la cible courante
+            	List<String> path = this.myMap.getShortestPath(myPosition.getLocationId(), currentTarget);
+
+            	if (path != null && !path.isEmpty()) {
+            	    boolean moved = ((AbstractDedaleAgent) this.myAgent).moveTo(new GsLocation(path.get(0)));
+            	    if (!moved) {
+            	        failedMoveCount++;
+            	        if (failedMoveCount >= MAX_FAILED_MOVES) {
+            	            String blockedNode = path.get(0);
+            	            blockedNodes.put(blockedNode, BLOCK_DURATION);
+            	            System.out.println("[" + myAgent.getLocalName() + "] Bloqué via " + blockedNode + " — nouvelle cible");
+            	            currentTarget = chooseBestOpenNodeExcludingPath(myPosition.getLocationId());
+            	            failedMoveCount = 0;
+            	        }
+            	    } else {
+            	        failedMoveCount = 0;
+            	    }
+            	} else {
+            	    // Aucun chemin trouvé — choisir une autre cible
+            	    currentTarget = chooseBestOpenNodeExcludingPath(myPosition.getLocationId());
+            	    failedMoveCount = 0;
+            	    block(500);
+            	}            }
         }
     }
     private void requestMap() {
@@ -201,28 +215,30 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
         // tous les noeuds ont un agent plus proche — prendre le plus proche quand même
         return sortedNodes.get(0).getLeft();
     }
-    private String chooseBestOpenNodeExcluding(String myPositionId, String excluded) {
+    private String chooseBestOpenNodeExcludingPath(String myPositionId) {
         List<String> openNodes = this.myMap.getOpenNodes();
 
         List<Couple<String, Integer>> sortedNodes = openNodes.stream()
-            .filter(node -> !node.equals(excluded)) // exclure le noeud bloqué
             .map(node -> {
                 List<String> path = this.myMap.getShortestPath(myPositionId, node);
-                int dist = (path != null) ? path.size() : Integer.MAX_VALUE;
-                return new Couple<>(node, dist);
+                // exclure les chemins qui passent par le noeud bloqué
+                if (path == null ||path.isEmpty() || blockedNodes.containsKey(path.get(0))) {
+                    return new Couple<>(node, Integer.MAX_VALUE);
+                }
+                return new Couple<>(node, path.size());
             })
+            .filter(c -> c.getRight() < Integer.MAX_VALUE)
             .sorted(Comparator.comparing(Couple::getRight))
             .collect(Collectors.toList());
 
         if (sortedNodes.isEmpty()) {
-            // plus de noeud disponible sans l'exclu — revenir au comportement normal
+            // tous les chemins passent par le noeud bloqué — attendre
             return chooseBestOpenNode(myPositionId);
         }
 
         for (Couple<String, Integer> candidate : sortedNodes) {
             String nodeId = candidate.getLeft();
             int myDist = candidate.getRight();
-            if (myDist == Integer.MAX_VALUE) continue;
 
             boolean anotherAgentCloser = knownPositions.entrySet().stream()
                 .filter(e -> !e.getKey().equals(this.myAgent.getLocalName()))
@@ -238,7 +254,10 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
                 return nodeId;
             }
         }
-
+        if (sortedNodes.isEmpty()) {
+            // fallback SANS contrainte
+            return chooseBestOpenNode(myPositionId);
+        }
         return sortedNodes.get(0).getLeft();
     }
 
