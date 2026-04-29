@@ -32,6 +32,8 @@ import javafx.scene.layout.AnchorPane;
 import javafx.scene.layout.StackPane;
 import javafx.stage.Stage;
 
+import org.graphstream.stream.file.FileSourceDGS;
+
 /**
  * This simple topology representation only deals with the graph, not its content.</br>
  * The knowledge representation is not well written (at all), it is just given as a minimal example.</br>
@@ -365,6 +367,43 @@ public class MapRepresentation implements Serializable {
 
 	public synchronized int getNodeCount() {
 	    return this.g.getNodeCount();
+	}
+	
+
+	public synchronized void loadFromDGS(String filename) {
+	    try {
+	        FileSourceDGS fs = new FileSourceDGS();
+	        fs.addSink(this.g); // injecte directement dans ton graphe
+
+	        fs.readAll(filename);
+
+	        // Optionnel : mettre tous les noeuds en "closed" par défaut
+	        this.g.nodes().forEach(n -> {
+	            n.setAttribute("ui.class", MapAttribute.closed.toString());
+	            n.setAttribute("ui.label", n.getId());
+	        });
+
+	        System.out.println("Carte DGS chargée");
+
+	    } catch (Exception e) {
+	        e.printStackTrace();
+	    }
+	    
+	}
+	public synchronized List<String> getNeighbors(String nodeId) {
+	    List<String> neighbors = new ArrayList<>();
+	    Node node = this.g.getNode(nodeId);
+	    if (node != null) {
+	        Iterator<Edge> edgeIterator = node.edges().iterator();
+	        while (edgeIterator.hasNext()) {
+	            Edge e = edgeIterator.next();
+	            Node opposite = e.getOpposite(node);
+	            if (opposite != null) {
+	                neighbors.add(opposite.getId());
+	            }
+	        }
+	    }
+	    return neighbors;
 	}
 
 
