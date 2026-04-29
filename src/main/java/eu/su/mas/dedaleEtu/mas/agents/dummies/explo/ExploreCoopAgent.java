@@ -1,122 +1,121 @@
 package eu.su.mas.dedaleEtu.mas.agents.dummies.explo;
-import java.util.Map;
+
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import eu.su.mas.dedale.env.Location;
+import eu.su.mas.dedale.mas.AbstractDedaleAgent;
+import eu.su.mas.dedale.mas.agent.behaviours.platformManagment.StartMyBehaviours;
+import eu.su.mas.dedale.princ.ConfigurationFile;
+import eu.su.mas.dedaleEtu.mas.behaviours.Constants;
+import eu.su.mas.dedaleEtu.mas.behaviours.ExchangeMessageBehaviour;
+import eu.su.mas.dedaleEtu.mas.behaviours.ExploCoopBehaviour;
+import eu.su.mas.dedaleEtu.mas.behaviours.RelayBehaviour;
+import eu.su.mas.dedaleEtu.mas.behaviours.WaitAtRallyBehaviour;
+import eu.su.mas.dedaleEtu.mas.knowledge.MapRepresentation;
+import jade.core.behaviours.Behaviour;
+import jade.util.leap.HashSet;
+import jade.util.leap.Set;
+import javafx.application.Platform;
+
+import java.util.Collections;
+
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-
-import eu.su.mas.dedale.mas.AbstractDedaleAgent;
-import eu.su.mas.dedale.mas.agent.behaviours.platformManagment.*;
-
-import eu.su.mas.dedaleEtu.mas.behaviours.ExploCoopBehaviour;
-import eu.su.mas.dedaleEtu.mas.knowledge.MapRepresentation;
-
-import jade.core.behaviours.Behaviour;
-import jade.wrapper.AgentController;
-import jade.wrapper.StaleProxyException;
-import eu.su.mas.dedale.env.Location;
-
-import eu.su.mas.dedaleEtu.mas.behaviours.ExchangeMessageBehaviour;
-import javafx.application.Platform;
-/**
- * <pre>
- * ExploreCoop agent. 
- * Basic example of how to "collaboratively" explore the map
- *  - It explore the map using a DFS algorithm and blindly tries to share the topology with the agents within reach.
- *  - The shortestPath computation is not optimized
- *  - Agents do not coordinate themselves on the node(s) to visit, thus progressively creating a single file. It's bad.
- *  - The agent sends all its map, periodically, forever. Its bad x3.
- *  - You should give him the list of agents'name to send its map to in parameter when creating the agent.
- *   Object [] entityParameters={"Name1","Name2};
- *   ag=createNewDedaleAgent(c, agentName, ExploreCoopAgent.class.getName(), entityParameters);
- *  
- * It stops when all nodes have been visited.
- * 
- * 
- *  </pre>
- *  
- * @author hc
- *
- */
-
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class ExploreCoopAgent extends AbstractDedaleAgent {
 
-	private static final long serialVersionUID = -7969469610241668140L;
-	private MapRepresentation myMap;
-	private static List<AgentController> agentList;// agents's ref
-	private Map<String, Location> knownPositions = new HashMap<>();
-	private ExchangeMessageBehaviour exchangeBehaviour;
+    private static final long serialVersionUID = -7969469610241668140L;
 
-	/**
-	 * This method is automatically called when "agent".start() is executed.
-	 * Consider that Agent is launched for the first time. 
-	 * 			1) set the agent attributes 
-	 *	 		2) add the behaviours
-	 *          
-	 */
-	protected void setup(){
+    public MapRepresentation myMap;
+    private Map<String, Location> knownPositions = new HashMap<>();
+    private ExchangeMessageBehaviour exchangeBehaviour;
+    public boolean huntStarted = false;
+    private String currentHuntTarget; // mis à jour lors des changements de cible
 
-		super.setup();
-		
-		//get the parameters added to the agent at creation (if any)
-		final Object[] args = getArguments();
-		
-		
-		List<String> list_agentNames = new ArrayList<>(
-			    List.of("Elsa","Tim","Claude","Alice","Bob","Charlie","Diana","Eve","Frank","Grace")
-			);
-			list_agentNames.remove(this.getLocalName()); // retire son propre nom
+    public String meetingPoint;
+    
+    
+    protected void setup() {
+        super.setup();
+        
 
-		
-		List<Behaviour> lb=new ArrayList<Behaviour>();
-		
-		/************************************************
-		 * 
-		 * ADD the behaviours of the Dummy Moving Agent
-		 * 
-		 ************************************************/
-		try {
-		    Platform.startup(() -> {});
-		} catch (IllegalStateException e) {
-		    // ras si déjà initialisé
-		}
-		this.myMap = new MapRepresentation(this.getLocalName());
-		this.exchangeBehaviour = new ExchangeMessageBehaviour(this, 600, this.knownPositions, this.myMap, list_agentNames);
-		lb.add(this.exchangeBehaviour);
-		
-		lb.add(new ExploCoopBehaviour(this, this.myMap, list_agentNames, this.knownPositions));
+        List<String> list_agentNames = new ArrayList<>();
+        try (InputStream is = getClass().getClassLoader().getResourceAsStream(
+                ConfigurationFile.INSTANCE_CONFIGURATION_ENTITIES)) {
+            if (is != null) {
+                String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                // Cherche toutes les chaînes du type : "agentName" : "Elsa"
+                Pattern pattern = Pattern.compile("\"agentName\"\\s*:\\s*\"([^\"]+)\"");
+                Matcher matcher = pattern.matcher(content);
+                while (matcher.find()) {
+                    String name = matcher.group(1);
+                    if (!name.equals(getLocalName())) {
+                        list_agentNames.add(name);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        list_agentNames.remove(this.getLocalName());
 
-		
-		
-		/***
-		 * MANDATORY TO ALLOW YOUR AGENT TO BE DEPLOYED CORRECTLY
-		 */
-		
-		
-		addBehaviour(new StartMyBehaviours(this,lb));
-		
-		System.out.println("the  agent "+this.getLocalName()+ " is started");
+        try { Platform.startup(() -> {}); }
+        catch (IllegalStateException e) { /* already initialised */ }
 
-	}
-	
-	public ExchangeMessageBehaviour getExchangeBehaviour() {
-	    return this.exchangeBehaviour;
-	}
-	/**
-	 * This method is automatically called after doDelete()
-	 */
-	protected void takeDown(){
-		super.takeDown();
-	}
+        this.myMap = new MapRepresentation(this.getLocalName());
+        this.exchangeBehaviour = new ExchangeMessageBehaviour(
+            this,Constants.stopTimeExplo*10, this.knownPositions, this.myMap, list_agentNames);
 
-	protected void beforeMove() {
-	    super.beforeMove();
-	    if (this.myMap != null) this.myMap.prepareMigration();
-	}
+        // ── Protocols that need range extension via relay ──────────────────
+        // Include every protocol where sender and receiver may be out of range.
+        // TRIGGER-SHARE and FINAL-MAP are NOT included: they're only sent when
+        // everyone is already at the rally point (all within range).
+        List<String> relayedProtocols = List.of(
+            WaitAtRallyBehaviour.PROTOCOL_COORD,
+         
+            WaitAtRallyBehaviour.PROTOCOL_FINAL_MAP,
+        
+            WaitAtRallyBehaviour.PROTOCOL_RALLY_ARRIVED_LIST
+        );
+        
 
-	protected void afterMove() {
-	    super.afterMove();
-	    if (this.myMap != null) this.myMap.loadSavedData();
-	}
+        List<Behaviour> lb = new ArrayList<>();
+        lb.add(this.exchangeBehaviour);
+        lb.add(new ExploCoopBehaviour(this, this.myMap, list_agentNames, this.knownPositions));
 
+        // RelayBehaviour runs permanently in parallel — add it to the initial
+        // behaviour list so it starts together with the others.
+        //lb.add(new RelayBehaviour(this, list_agentNames, relayedProtocols));
+
+        addBehaviour(new StartMyBehaviours(this, lb));
+
+        System.out.println("Agent " + this.getLocalName() + " started");
+    }
+
+    public ExchangeMessageBehaviour getExchangeBehaviour() {
+        return this.exchangeBehaviour;
+    }
+
+    protected void takeDown() { super.takeDown(); }
+
+    protected void beforeMove() {
+        super.beforeMove();
+        if (this.myMap != null) this.myMap.prepareMigration();
+    }
+
+    protected void afterMove() {
+        super.afterMove();
+        if (this.myMap != null) this.myMap.loadSavedData();
+    }
+    public String getCurrentHuntTarget() {
+        return currentHuntTarget;
+    }
 }
