@@ -1,3 +1,4 @@
+
 package eu.su.mas.dedaleEtu.mas.behaviours;
 
 import java.io.IOException;
@@ -46,6 +47,8 @@ public class ExchangeMessageBehaviour extends TickerBehaviour {
         MessageTemplate.MatchProtocol("SHARE-TOPO"),
         MessageTemplate.MatchPerformative(ACLMessage.INFORM)
     );
+    
+    
     
     private static final int MAP_SHARE_INTERVAL = 5;
     private static final int NODE_SHARE_THRESHOLD = 0;

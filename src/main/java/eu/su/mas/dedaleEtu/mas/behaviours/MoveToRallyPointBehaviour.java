@@ -1,174 +1,156 @@
 package eu.su.mas.dedaleEtu.mas.behaviours;
-
+import jade.lang.acl.MessageTemplate;
 import eu.su.mas.dedale.env.Location;
 import eu.su.mas.dedale.env.gs.GsLocation;
 import eu.su.mas.dedale.mas.AbstractDedaleAgent;
 import eu.su.mas.dedaleEtu.mas.agents.dummies.explo.ExploreCoopAgent;
 import eu.su.mas.dedaleEtu.mas.knowledge.MapRepresentation;
 import jade.core.AID;
-import jade.lang.acl.ACLMessage;
-import jade.lang.acl.MessageTemplate;
 import jade.core.behaviours.SimpleBehaviour;
+import jade.lang.acl.ACLMessage;
 
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
-import eu.su.mas.dedaleEtu.mas.knowledge.MapRepresentation.MapAttribute;
-import dataStructures.serializableGraph.SerializableSimpleGraph;
-import jade.lang.acl.UnreadableException;
-
+import java.util.Random;
 
 public class MoveToRallyPointBehaviour extends SimpleBehaviour {
 
     private static final long serialVersionUID = 1L;
+
     private final MapRepresentation myMap;
     private final List<String> allAgentNames;
     private boolean finished = false;
     private String coordinatorName = null;
-    private int tickCount = 0;
-    private static final int RELAY_INTERVAL = 10;
-
-    private static final MessageTemplate TEMPLATE_COORD = MessageTemplate.and(
-        MessageTemplate.MatchProtocol(WaitAtRallyBehaviour.PROTOCOL_COORD),
-        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
-    );
-    private static final MessageTemplate TEMPLATE_ASSIGN = MessageTemplate.and(
-        MessageTemplate.MatchProtocol(WaitAtRallyBehaviour.PROTOCOL_ASSIGN),
-        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
-    );
-    private static final MessageTemplate TEMPLATE_MAP_RESPONSE = MessageTemplate.and(
-        MessageTemplate.MatchProtocol("RALLY-MAP-RESPONSE"),
-        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
-    );
+    private boolean listInitSent = false;
+    private int failedMoveCount = 0;
+    private static final int MAX_FAILED_BEFORE_WAIT = 5;
+    private final Random random = new Random();
+    private final Map<String, Location> knownPositions;
 
     public MoveToRallyPointBehaviour(AbstractDedaleAgent agent,
                                      MapRepresentation myMap,
-                                     List<String> allAgentNames) {
+                                     List<String> allAgentNames,
+                                     Map<String, Location> knownPositions) {
         super(agent);
         this.myMap = myMap;
         this.allAgentNames = allAgentNames;
+        this.knownPositions = knownPositions;
     }
 
     @Override
     public void action() {
-        tickCount++;
-
-        // 1) mémoriser le coordinateur
-        ACLMessage coordMsg = myAgent.receive(TEMPLATE_COORD);
+    	System.out.println( "                                            " +myAgent.getLocalName()+ " EST EN ROUTE");
+    	
+        // 1) Recevoir COORD
+        ACLMessage coordMsg = receiveFiltered(
+            jade.lang.acl.MessageTemplate.and(
+                jade.lang.acl.MessageTemplate.MatchProtocol(WaitAtRallyBehaviour.PROTOCOL_COORD),
+                jade.lang.acl.MessageTemplate.MatchPerformative(ACLMessage.INFORM)
+            ));
         if (coordMsg != null && coordinatorName == null) {
             coordinatorName = coordMsg.getContent();
-            System.out.println("[" + myAgent.getLocalName() + "] RALLY-COORD reçu de " + coordinatorName);
+            System.out.println("[" + myAgent.getLocalName() + "] COORD reçu, leader = " + coordinatorName);
             ((ExploreCoopAgent) myAgent).getExchangeBehaviour().stopBehaviour();
         }
 
-        // 2) ASSIGN reçu — parser et lancer HuntBehaviour  ← MODIFIED
-        ACLMessage assignMsg = myAgent.receive(TEMPLATE_ASSIGN);
-        if (assignMsg != null) {
-            System.out.println("[" + myAgent.getLocalName() + "] ASSIGN reçu");
-            parseAndLaunchHunt(assignMsg.getContent());
-            finished = true;
-            return;
-        }
-
-        // 3) carte reçue
-        ACLMessage mapResponse = myAgent.receive(TEMPLATE_MAP_RESPONSE);
-        if (mapResponse != null) {
-            try {
-                SerializableSimpleGraph<String, MapAttribute> sg =
-                    (SerializableSimpleGraph<String, MapAttribute>) mapResponse.getContentObject();
-                myMap.mergeMap(sg);
-                System.out.println("[" + myAgent.getLocalName() + "] Carte reçue et mergée");
-            } catch (UnreadableException e) {
-                e.printStackTrace();
+        // 2) Réception d'une RALLY‑ARRIVED‑LIST → basculer immédiatement
+        ACLMessage listMsg = myAgent.receive(
+            jade.lang.acl.MessageTemplate.and(
+                jade.lang.acl.MessageTemplate.MatchProtocol(WaitAtRallyBehaviour.PROTOCOL_RALLY_ARRIVED_LIST),
+                jade.lang.acl.MessageTemplate.MatchPerformative(ACLMessage.INFORM)
+            ));
+        if (listMsg != null) {
+            String content = listMsg.getContent();
+            if (content != null) {
+                String[] parts = content.split(":", 2);
+                String coord = parts[0];
+                if (coordinatorName == null) {
+                    coordinatorName = coord;
+                    System.out.println("[" + myAgent.getLocalName() + "] Reçu liste, coordinateur = " + coord);
+                }
+                // Basculer en WaitAtRally
+                String rallyPoint = myMap.getAllNodes().stream().min(Comparator.naturalOrder()).orElse(null);
+                ((ExploreCoopAgent) myAgent).getExchangeBehaviour().stopBehaviour();
+                myAgent.addBehaviour(new WaitAtRallyBehaviour(
+                	    (AbstractDedaleAgent) myAgent, myMap, allAgentNames,
+                	    coordinatorName, rallyPoint, knownPositions));
+                finished = true;
+                return;
             }
         }
 
-        // 4) envoi périodique ARRIVED + relay
-        if (coordinatorName != null && tickCount % RELAY_INTERVAL == 0) {
-            sendArrived();
-            relayCoordAnnounce();
-        }
-
-        // 5) calcul rally point
-        List<String> openNodes = myMap.getOpenNodes();
-        String rallyPoint = myMap.getAllNodes().stream()
-            .filter(id -> !openNodes.contains(id))
-            .min(Comparator.naturalOrder())
-            .orElse(null);
-
-        if (rallyPoint == null) { block(500); return; }
+        // 3) Rally point
+        String rallyPoint = myMap.getAllNodes().stream().min(Comparator.naturalOrder()).orElse(null);
+        if (rallyPoint == null) { block(Constants.stopTimeExplo); return; }
 
         Location currentPos = ((AbstractDedaleAgent) myAgent).getCurrentPosition();
-        if (currentPos == null) { block(500); return; }
+        if (currentPos == null) { block(Constants.stopTimeExplo); return; }
 
-        // 6) arrivé au rally sans coordinateur connu — je suis le coordinateur
-        if (currentPos.getLocationId().equals(rallyPoint) && coordinatorName == null) {
-            System.out.println("[" + myAgent.getLocalName() + "] Arrivé au rally, je suis le coordinateur");
+        // 4) Si on atteint le rally point
+        if (currentPos.getLocationId().equals(rallyPoint)) {
+            String effectiveCoord = (coordinatorName != null) ? coordinatorName : myAgent.getLocalName();
+            if (!listInitSent) {
+                listInitSent = true;
+                // Envoyer la liste initiale avec le coordinateur
+                ACLMessage initMsg = new ACLMessage(ACLMessage.INFORM);
+                initMsg.setProtocol(WaitAtRallyBehaviour.PROTOCOL_RALLY_ARRIVED_LIST);
+                initMsg.setConversationId(RelayBehaviour.tag(myAgent.getLocalName()));
+                initMsg.setSender(myAgent.getAID());
+                initMsg.setContent(effectiveCoord + ":" + myAgent.getLocalName());
+                for (String name : allAgentNames) {
+                    if (!name.equals(myAgent.getLocalName()))
+                        initMsg.addReceiver(new AID(name, AID.ISLOCALNAME));
+                }
+                ((AbstractDedaleAgent) myAgent).sendMessage(initMsg);
+                System.out.println("[" + myAgent.getLocalName() + "] Lancement liste (coord=" + effectiveCoord + ")");
+            }
             ((ExploreCoopAgent) myAgent).getExchangeBehaviour().stopBehaviour();
             myAgent.addBehaviour(new WaitAtRallyBehaviour(
-                (AbstractDedaleAgent) myAgent, myMap, allAgentNames));
+            	    (AbstractDedaleAgent) myAgent, myMap, allAgentNames,
+            	    myAgent.getLocalName(), rallyPoint, knownPositions));
             finished = true;
             return;
         }
 
-        // 7) avancer vers le rally
+        // 5) Déplacement
         List<String> path = myMap.getShortestPath(currentPos.getLocationId(), rallyPoint);
-        if (path == null || path.isEmpty()) { block(500); return; }
+        if (path == null || path.isEmpty()) { block(Constants.stopTimeExplo); return; }
 
         boolean moved = ((AbstractDedaleAgent) myAgent).moveTo(new GsLocation(path.get(0)));
-        if (!moved) block(500);
-    }
-
-    private void relayCoordAnnounce() {
-        ACLMessage relay = new ACLMessage(ACLMessage.INFORM);
-        relay.setProtocol(WaitAtRallyBehaviour.PROTOCOL_COORD);
-        relay.setSender(myAgent.getAID());
-        relay.setContent(coordinatorName);
-        for (String name : allAgentNames) {
-            if (!name.equals(myAgent.getLocalName()) && !name.equals(coordinatorName))
-                relay.addReceiver(new AID(name, AID.ISLOCALNAME));
+        if (!moved) {
+            failedMoveCount++;
+            if (failedMoveCount >= MAX_FAILED_BEFORE_WAIT) {
+                requestMap();
+                launchHunt();
+                finished=true;
+                return;
+            }
+        } else {
+            failedMoveCount = 0;
+            block(Constants.stopTimeExplo);
         }
-        ((AbstractDedaleAgent) myAgent).sendMessage(relay);
+        
     }
-
-    private void sendArrived() {
-        ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
-        msg.setProtocol(WaitAtRallyBehaviour.PROTOCOL_ARRIVED);
-        msg.setSender(myAgent.getAID());
-        msg.addReceiver(new AID(coordinatorName, AID.ISLOCALNAME));
-        msg.setContent(myAgent.getLocalName());
-        ((AbstractDedaleAgent) myAgent).sendMessage(msg);
-    }
-
-    // ── MODIFIED: parse assignment and immediately launch HuntBehaviour ───────
-    private void parseAndLaunchHunt(String content) {
-        Map<String, Integer> assignment = new LinkedHashMap<>();
-        for (String token : content.split(",")) {
-            String[] parts = token.split(":");
-            assignment.put(parts[0], Integer.parseInt(parts[1]));
+    
+    private ACLMessage receiveFiltered(MessageTemplate template) {
+        ACLMessage msg = myAgent.receive(template);
+        while (msg != null && RelayBehaviour.alreadyRelayedInConv(msg.getConversationId(), myAgent.getLocalName())) {
+            msg = myAgent.receive(template);
         }
-
-        int myGroup = assignment.getOrDefault(myAgent.getLocalName(), 0);
-        int nbGroups = assignment.values().stream().mapToInt(v -> v).max().orElse(0) + 1;
-
-        List<String> myGroupMembers = assignment.entrySet().stream()
-            .filter(e -> e.getValue() == myGroup)
-            .map(Map.Entry::getKey)
-            .collect(Collectors.toList());
-
-        System.out.println("[" + myAgent.getLocalName() + "] Groupe " + myGroup
-            + " — membres : " + myGroupMembers + " — lancement HuntBehaviour");
-
-        myAgent.addBehaviour(new HuntBehaviour(
-            (AbstractDedaleAgent) myAgent,
-            myMap,
-            myGroup,
-            nbGroups,
-            myGroupMembers,
-            allAgentNames
-        ));
+        return msg;
+    }
+    private void requestMap() {
+        ACLMessage req = new ACLMessage(ACLMessage.REQUEST);
+        req.setProtocol("RALLY-MAP-REQUEST");
+        req.setSender(myAgent.getAID());
+        req.setContent(myAgent.getLocalName());
+        ((AbstractDedaleAgent) myAgent).sendMessage(req);
+    }
+    private void launchHunt() {
+        System.out.println("[" + myAgent.getLocalName() + "] Lancement de HuntBehaviour !");
+        ((ExploreCoopAgent) myAgent).meetingPoint = null;
+        myAgent.addBehaviour(new HuntBehaviour( (ExploreCoopAgent)myAgent, allAgentNames,coordinatorName));
     }
 
     @Override

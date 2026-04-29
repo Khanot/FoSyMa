@@ -1,4 +1,5 @@
 package eu.su.mas.dedaleEtu.mas.behaviours;
+
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -10,6 +11,7 @@ import eu.su.mas.dedale.env.Observation;
 import eu.su.mas.dedale.env.gs.GsLocation;
 
 import eu.su.mas.dedale.mas.AbstractDedaleAgent;
+import eu.su.mas.dedale.princ.ConfigurationFile;
 import eu.su.mas.dedaleEtu.mas.agents.dummies.explo.ExploreCoopAgent;
 
 import eu.su.mas.dedaleEtu.mas.knowledge.MapRepresentation.MapAttribute;
@@ -21,9 +23,11 @@ import jade.lang.acl.MessageTemplate;
 import jade.lang.acl.UnreadableException;
 
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.stream.Collectors;
-
+import eu.su.mas.dedaleEtu.mas.behaviours.Constants;
 /**
  * <pre>
  * This behaviour allows an agent to explore the environment and learn the associated topological map.
@@ -40,8 +44,12 @@ import java.util.stream.Collectors;
  */
 public class ExploCoopBehaviour extends SimpleBehaviour {
 
+	
+	
     private static final long serialVersionUID = 8567689731496787661L;
+    
 
+    
     private boolean finished = false;
     private Location myPos;
     private MapRepresentation myMap;
@@ -50,6 +58,7 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
     
     private String currentTarget = null;
     private int failedMoveCount = 0;
+    private int failedFinal = 0;
     private static final int MAX_FAILED_MOVES = 3;
     private Map<String, Integer> blockedNodes = new HashMap<>();
     private static final int BLOCK_DURATION = 5;
@@ -66,6 +75,8 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
     	);
     @Override
     public void action() {
+    	System.out.println( "                                            " +myAgent.getLocalName()+ " EST EN EXPLO");
+    	
     	blockedNodes.replaceAll((node, ticks) -> ticks - 1);
     	blockedNodes.entrySet().removeIf(e -> e.getValue() <= 0);
     	
@@ -79,7 +90,7 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
             // passer directement à MoveToRallyPoint
             finished = true;
             myAgent.addBehaviour(new MoveToRallyPointBehaviour(
-                (AbstractDedaleAgent) myAgent, myMap, list_agentNames));
+                (AbstractDedaleAgent) myAgent, myMap, list_agentNames, knownPositions));
             return;
         }
     	
@@ -92,7 +103,7 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
         Location myPosition = ((AbstractDedaleAgent) this.myAgent).getCurrentPosition();
 
         if (myPosition != null) {
-            try { block(1000); } catch (Exception e) { e.printStackTrace(); }
+            try { block(Constants.stopTimeExplo); } catch (Exception e) { e.printStackTrace(); }
 
             // 1) marquer le noeud courant comme closed
             this.myMap.addNode(myPosition.getLocationId(), MapAttribute.closed);
@@ -115,7 +126,8 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
                 myAgent.addBehaviour(new MoveToRallyPointBehaviour(
                     (AbstractDedaleAgent) myAgent,
                     this.myMap,
-                    this.list_agentNames  // déjà disponible dans ExploCoopBehaviour
+                    this.list_agentNames,
+                    this.knownPositions// déjà disponible dans ExploCoopBehaviour
                 ));
             }else {
             	// 4) Décider si on doit choisir une nouvelle cible
@@ -153,7 +165,25 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
             	            System.out.println("[" + myAgent.getLocalName() + "] Bloqué via " + blockedNode + " — nouvelle cible");
             	            currentTarget = chooseBestOpenNodeExcludingPath(myPosition.getLocationId());
             	            failedMoveCount = 0;
+            	            failedFinal++;
+            	            if (failedFinal > MAX_FAILED_MOVES) {
+            	                System.out.println("[" + myAgent.getLocalName() + "] Bloquer, je lance la chasse directement !");
+            	                requestMap(); // tente une dernière mise à jour de la carte
+            	                String rallyPoint = myMap.getAllNodes().stream().min(Comparator.naturalOrder()).orElse(null);
+            	                ((ExploreCoopAgent) myAgent).meetingPoint = rallyPoint;
+
+            	                // Le coordinateur est le premier agent dans la liste triée (ordre alpha)
+            	                List<String> sortedAgents = new ArrayList<>(list_agentNames);
+            	                sortedAgents.add(myAgent.getLocalName());
+            	                Collections.sort(sortedAgents);
+            	                String coordinator = sortedAgents.get(0);
+
+            	                finished = true;
+            	                myAgent.addBehaviour(new HuntBehaviour((ExploreCoopAgent) myAgent, list_agentNames, coordinator));
+            	                return;
+            	            }
             	        }
+            	        
             	    } else {
             	        failedMoveCount = 0;
             	    }
@@ -161,7 +191,7 @@ public class ExploCoopBehaviour extends SimpleBehaviour {
             	    // Aucun chemin trouvé — choisir une autre cible
             	    currentTarget = chooseBestOpenNodeExcludingPath(myPosition.getLocationId());
             	    failedMoveCount = 0;
-            	    block(500);
+            	    block(Constants.stopTimeExplo);
             	}            }
         }
     }
